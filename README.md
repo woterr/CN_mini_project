@@ -67,3 +67,15 @@ room events. See controller/README.md for the policy format.
 - Queue-based priority on the Mininet bottleneck link is left for the next
   milestone.
 - Automated load testing is reserved for a later milestone.
+
+
+## Screenshots
+
+Chat server
+<img width="830" height="131" alt="image" src="https://github.com/user-attachments/assets/5b7dc790-6e89-4aeb-b650-fc48d0fdd1bf" />
+
+
+
+Chat client
+<img width="948" height="436" alt="image" src="https://github.com/user-attachments/assets/8263b009-7761-4c28-91a9-527c65f8eac0" />
+
