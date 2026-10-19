@@ -1,0 +1,9 @@
+{
+  "priority_rooms": ["vip"],
+  "hosts": {
+    "10.0.0.1": "priority",
+    "10.0.0.2": "normal",
+    "10.0.0.3": "normal",
+    "10.0.0.4": "blocked"
+  }
+}

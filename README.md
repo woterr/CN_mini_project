@@ -10,11 +10,13 @@ when users join or leave rooms.
 ## Requirements
 - Python 3
 - No third-party Python packages required for the chat server or client
+- Ryu (OpenFlow 1.3) for the SDN controller
 
 ## Project Structure
 - server/chat_server.py — TCP chat server
 - client/chat_client.py — Command-line chat client
-- controller/ — SDN controller integration
+- controller/chat_controller.py — Ryu controller (L2 forwarding + policies)
+- controller/policy.json — Host tiers and priority rooms
 - topology/ — Network topology
 - experiments/ — Testing and performance experiments
 - docs/protocol.md — Protocol specification
@@ -49,10 +51,19 @@ TCP connection to 127.0.0.1:6000:
 - ROOM_JOIN <user_ip> <room>
 - ROOM_LEAVE <user_ip> <room>
 
-Delivery to the actual Ryu controller has not yet been verified.
+The controller in controller/chat_controller.py listens for these messages.
+
+## Run the SDN Controller
+Start the chat server first, then run the controller from the project root:
+
+    ryu-manager controller/chat_controller.py
+
+The controller reads controller/policy.json and listens on 0.0.0.0:6000 for
+room events. See controller/README.md for the policy format.
 
 ## Limitations
 - Accounts and rooms are stored in memory and reset when the server restarts.
 - Local Windows clients share the loopback IP address.
-- Integration with the Ryu controller and Mininet remains to be tested.
+- Queue-based priority on the Mininet bottleneck link is left for the next
+  milestone.
 - Automated load testing is reserved for a later milestone.
