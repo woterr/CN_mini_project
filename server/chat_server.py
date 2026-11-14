@@ -1,6 +1,7 @@
 
 import socket
 import threading
+import queue
 
 # Chat server configuration
 HOST = "0.0.0.0"
@@ -18,6 +19,8 @@ client_user = {}    # client socket: username
 
 lock = threading.Lock()
 
+controller_queue = queue.Queue()
+
 
 def send_message(client, message):
     """Send one newline-terminated message to a client."""
@@ -27,24 +30,37 @@ def send_message(client, message):
         pass
 
 
+
 def notify_controller(event, user_ip, room):
-    """Send a room event to the SDN controller over TCP."""
-    message = f"{event} {user_ip} {room}\n"
+    """Add an SDN event to the background queue."""
+    controller_queue.put((event, user_ip, room))
 
-    try:
-        with socket.create_connection(
-            (CONTROLLER_HOST, CONTROLLER_PORT),
-            timeout=1
-        ) as controller_socket:
-            controller_socket.sendall(message.encode("utf-8"))
 
-        print(f"[SDN NOTIFICATION] {message.strip()}")
+def controller_worker():
+    """Process SDN notifications in the background."""
+    while True:
+        event, user_ip, room = controller_queue.get()
 
-    except OSError:
-        print(
-            f"[SDN] Controller unavailable; "
-            f"notification not delivered: {message.strip()}"
-        )
+        message = f"{event} {user_ip} {room}\n"
+
+        try:
+            with socket.create_connection(
+                (CONTROLLER_HOST, CONTROLLER_PORT),
+                timeout=1
+            ) as controller_socket:
+                controller_socket.sendall(message.encode("utf-8"))
+
+            print(f"[SDN NOTIFICATION] {message.strip()}")
+
+        except OSError:
+            print(
+                f"[SDN] Controller unavailable; "
+                f"notification not delivered: {message.strip()}"
+            )
+
+        finally:
+            controller_queue.task_done()
+
 
 
 def handle_client(client, address):
@@ -234,8 +250,10 @@ def handle_client(client, address):
                                 f"ROOMMSG {room} {username} {text}"
                             )
 
+                
                 # PRIVATE MESSAGE
                 elif command == "PM":
+
                     if len(parts) < 3 or not parts[1] or not parts[2]:
                         send_message(client, "ERR BAD_COMMAND")
                         continue
@@ -243,16 +261,26 @@ def handle_client(client, address):
                     target, text = parts[1], parts[2]
 
                     with lock:
-                        recipient = online_users.get(target)
+                        if target not in users:
+                            response = "ERR NO_SUCH_USER"
+                            recipient = None
 
-                    if recipient is None:
-                        send_message(client, "ERR NO_SUCH_USER")
-                    else:
+                        elif target not in online_users:
+                            response = "ERR USER_OFFLINE"
+                            recipient = None
+
+                        else:
+                            response = "OK sent"
+                            recipient = online_users[target]
+
+                    if response == "OK sent":
                         send_message(
                             recipient,
                             f"PMSG {username} {text}"
                         )
-                        send_message(client, "OK sent")
+
+                    send_message(client, response)
+
 
                 # LIST ONLINE USERS
                 elif command == "USERS":
@@ -313,6 +341,14 @@ def main():
 
     print(f"Chat server listening on {HOST}:{PORT}")
 
+    worker = threading.Thread(
+        target=controller_worker,
+        daemon=True
+    )
+    worker.start()
+
+    print("[SDN] Background controller worker started.")
+
     try:
         while True:
             client, address = server.accept()
@@ -323,7 +359,7 @@ def main():
                 daemon=True
             )
             thread.start()
-
+            
     except KeyboardInterrupt:
         print("\nShutting down server.")
 
