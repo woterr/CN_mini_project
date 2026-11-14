@@ -196,8 +196,9 @@ Each client sent 5 messages to the chat server. Message RTT and connection setup
 |---:|---:|---:|---:|---:|---:|
 | 10 | 50 | 50 | 0 | 72.174 | 122.560 |
 | 25 | 125 | 125 | 0 | 83.452 | 291.304 |
+| 50 | 250 | 250 | 0 | 82.845 | 2368.849 |
 
-Both experiments completed successfully, recording 175 successful messages with zero failures.
+All three experiments completed successfully, recording 425 successful messages with zero failures.
 
 ### Mininet CSV and Graph Results
 
@@ -205,14 +206,15 @@ The measurements and generated graphs are stored in `experiments/results/`:
 
 - `baseline_10clients.csv`
 - `baseline_25clients.csv`
+- `baseline_50clients.csv`
 - `baseline_rtt.png`
 - `baseline_connection_setup.png`
 - `baseline_25clients_rtt.png`
 - `baseline_25clients_connection_setup.png`
+- `baseline_50clients_rtt.png`
+- `baseline_50clients_connection_setup.png`
 
 ### Performance Observation
 
-As the number of concurrent clients increased from 10 to 25, average RTT increased from 72.174 ms to 83.452 ms. Average connection setup time increased from 122.560 ms to 291.304 ms.
-
-These results indicate increased communication overhead with a higher number of concurrent clients.
+Average RTT remained around 83 ms for the 25- and 50-client experiments. Average connection setup time increased substantially, from 122.560 ms with 10 clients to 2368.849 ms with 50 clients. This indicates increased connection setup overhead under higher concurrent client loads.
 
