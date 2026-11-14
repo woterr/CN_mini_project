@@ -185,3 +185,34 @@ Each CSV contains:
 ### Chat Client
 
 ![Chat Client](https://github.com/user-attachments/assets/8263b009-7761-4c28-91a9-527c65f8eac0)
+
+## Mininet Baseline Performance Results
+
+Baseline performance testing was conducted using Mininet with a 5 Mbps bottleneck link and 10 ms configured link delay.
+
+Each client sent 5 messages to the chat server. Message RTT and connection setup time were recorded.
+
+| Concurrent clients | Total messages | Successful messages | Failed messages | Average RTT (ms) | Average connection setup (ms) |
+|---:|---:|---:|---:|---:|---:|
+| 10 | 50 | 50 | 0 | 72.174 | 122.560 |
+| 25 | 125 | 125 | 0 | 83.452 | 291.304 |
+
+Both experiments completed successfully, recording 175 successful messages with zero failures.
+
+### Mininet CSV and Graph Results
+
+The measurements and generated graphs are stored in `experiments/results/`:
+
+- `baseline_10clients.csv`
+- `baseline_25clients.csv`
+- `baseline_rtt.png`
+- `baseline_connection_setup.png`
+- `baseline_25clients_rtt.png`
+- `baseline_25clients_connection_setup.png`
+
+### Performance Observation
+
+As the number of concurrent clients increased from 10 to 25, average RTT increased from 72.174 ms to 83.452 ms. Average connection setup time increased from 122.560 ms to 291.304 ms.
+
+These results indicate increased communication overhead with a higher number of concurrent clients.
+
