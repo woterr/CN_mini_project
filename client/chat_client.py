@@ -5,8 +5,8 @@ import csv
 import time
 import os
 
-HOST = "127.0.0.1"
-PORT = 5000
+HOST = os.environ.get("CHAT_HOST", "10.0.0.10")
+PORT = int(os.environ.get("CHAT_PORT", "5000"))
 
 
 def receive_messages(sock):
@@ -69,7 +69,7 @@ def main():
         print("Client closed.")
 
 
-def auto_mode(username, password, room, message_count, csv_file):
+def auto_mode(username, password, room, message_count, csv_file, padding=0):
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client.settimeout(10)
 
@@ -122,6 +122,11 @@ def auto_mode(username, password, room, message_count, csv_file):
 
         for i in range(1, message_count + 1):
             message = f"Automated message {i} from {username}"
+
+            # Optional padding to create realistic load on the bottleneck
+            # link (message text may contain spaces per the protocol).
+            if padding > 0:
+                message += " " + ("payload" * ((padding // 7) + 1))[:padding]
 
             start = time.perf_counter()
 
@@ -188,6 +193,9 @@ if __name__ == "__main__":
     parser.add_argument("--password", default="pass123")
     parser.add_argument("--room", default="room1")
     parser.add_argument("--messages", type=int, default=10)
+    parser.add_argument("--size", type=int, default=0,
+                        help="Pad each auto-mode message to ~SIZE bytes "
+                             "(0 = plain short messages)")
     parser.add_argument("--csv", default="performance_results.csv")
 
     args = parser.parse_args()
@@ -198,7 +206,8 @@ if __name__ == "__main__":
             args.password,
             args.room,
             args.messages,
-            args.csv
+            args.csv,
+            args.size
         )
     else:
         main()
