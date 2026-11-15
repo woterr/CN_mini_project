@@ -7,7 +7,8 @@ import time
 import tempfile
 from pathlib import Path
 
-def run_experiment(client_count, message_count, room, password, output_file):
+def run_experiment(client_count, message_count, room, password, output_file,
+                   username_prefix="auto"):
 
     project_root = Path(__file__).resolve().parent.parent
     client_script = project_root / "client" / "chat_client.py"
@@ -24,7 +25,7 @@ def run_experiment(client_count, message_count, room, password, output_file):
         # Start all clients
         for i in range(1, client_count + 1):
 
-            username = f"auto{i}"
+            username = f"{username_prefix}{i}"
             client_csv = os.path.join(temp_dir, f"{username}.csv")
 
             command = [
@@ -38,7 +39,12 @@ def run_experiment(client_count, message_count, room, password, output_file):
                 "--csv", client_csv
             ]
 
-            process = subprocess.Popen(command)
+            # Local experiments talk over loopback; the client itself
+            # defaults to the Mininet server address.
+            child_env = os.environ.copy()
+            child_env.setdefault("CHAT_HOST", "127.0.0.1")
+
+            process = subprocess.Popen(command, env=child_env)
             processes.append((username, process, client_csv))
 
         # Wait for all clients to finish and verify results
@@ -116,9 +122,8 @@ def main():
     parser.add_argument(
         "--count",
         type=int,
-        choices=[10, 25, 50, 100],
         default=10,
-        help="Number of clients to launch"
+        help="Number of clients to launch (experiment counts: 10/25/50/100)"
     )
 
     parser.add_argument(
@@ -146,15 +151,61 @@ def main():
         help="Output CSV filename"
     )
 
+    parser.add_argument(
+        "--prefix",
+        default="auto",
+        help="Username prefix for automated clients "
+             "(use pri/norm for priority-vs-normal runs)"
+    )
+
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="Number of repeated runs; each run is written to its own CSV "
+             "suffixed _run<k>, and all runs are also combined into --output"
+    )
+
     args = parser.parse_args()
 
-    run_experiment(
-        args.count,
-        args.messages,
-        args.room,
-        args.password,
-        args.output
-    )
+    combined_rows = []
+    combined_fieldnames = None
+    all_ok = True
+
+    for run in range(1, args.runs + 1):
+        if args.runs > 1:
+            stem = Path(args.output).with_suffix("")
+            output = f"{stem}_run{run}.csv"
+            print(f"\n=== Run {run}/{args.runs} -> {output} ===")
+        else:
+            output = args.output
+
+        ok = run_experiment(
+            args.count,
+            args.messages,
+            args.room,
+            args.password,
+            output,
+            args.prefix
+        )
+        all_ok = all_ok and ok
+
+        # Collect rows for the combined CSV
+        with open(output, newline="") as f:
+            rows = list(csv.DictReader(f))
+            if rows:
+                combined_fieldnames = list(rows[0].keys())
+                combined_rows.extend(rows)
+
+    if combined_fieldnames and args.runs > 1:
+        with open(args.output, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=combined_fieldnames)
+            writer.writeheader()
+            writer.writerows(combined_rows)
+        print(f"\nCombined {args.runs} runs into {args.output}")
+
+    if not all_ok:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

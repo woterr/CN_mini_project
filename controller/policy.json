@@ -1,5 +1,6 @@
 {
   "priority_rooms": ["vip"],
+  "default_tier": "normal",
   "hosts": {
     "10.0.0.1": "priority",
     "10.0.0.2": "normal",

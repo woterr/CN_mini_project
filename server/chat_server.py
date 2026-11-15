@@ -1,4 +1,5 @@
 
+import os
 import socket
 import threading
 import queue
@@ -8,8 +9,8 @@ HOST = "0.0.0.0"
 PORT = 5000
 
 # SDN controller configuration
-CONTROLLER_HOST = "127.0.0.1"
-CONTROLLER_PORT = 6000
+CONTROLLER_HOST = os.environ.get("CONTROLLER_HOST", "127.0.0.1")
+CONTROLLER_PORT = int(os.environ.get("CONTROLLER_PORT", "6000"))
 
 # Shared server data
 users = {}          # username: password

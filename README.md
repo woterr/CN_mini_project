@@ -1,180 +1,175 @@
 # Multi-Client Chat Network
 
-## Overview
+A multi-user chat application (Python TCP sockets + threading) running on a
+Mininet network with an SDN controller that classifies users into tiers,
+blocks unwanted hosts, and gives priority users a faster queue on the
+bottleneck link — while the system is running.
 
-A multi-client chat application built using Python TCP sockets and threading.
+## What it does
 
-It supports user registration, login, chat rooms, room messaging, private messaging, online-user tracking, disconnect handling and error handling.
-
-The chat server also communicates with an SDN controller through asynchronous room-join and room-leave notifications.
+- **Chat**: registration, login, chat rooms, room messages, private messages,
+  online-user tracking. One thread per client; see `docs/protocol.md`.
+- **SDN policies** (`controller/chat_controller.py`, config in
+  `controller/policy.json`):
+  - **Queues on the bottleneck link** — priority tier → higher-priority queue,
+    normal tier → limited queue (see the table below).
+  - **Dynamic priority rooms** — when a `ROOM_JOIN` / `ROOM_LEAVE` arrives
+    from the chat server for a priority room (`vip`), that user's traffic
+    moves to or from the priority queue **while the system is running**.
+  - **Blocked users** — blocked hosts are dropped at the switch; they cannot
+    even connect to the server.
+  - **Readable controller log** — every policy decision is logged with the
+    host, tier, queue and reason (`[POLICY] ...` lines).
+- **Comparison** — the same topology runs against a plain learning-switch
+  controller (`controller/baseline_controller.py`) so the policies' effect
+  is measurable.
 
 ## Requirements
 
-- Python 3
-- No third-party Python packages required for the chat server or client
-- Ryu (OpenFlow 1.3) for the SDN controller
+- Python 3 (chat server/client: standard library only)
+- Ryu with OpenFlow 1.3 (bundled in `ryu-env/`)
+- Mininet and Open vSwitch (for the network experiments)
 
-## Project Structure
+## Quick start (local, no Mininet)
 
-- `server/chat_server.py` — TCP chat server
-- `client/chat_client.py` — Command-line chat client with interactive and automated modes
-- `controller/chat_controller.py` — Ryu controller (L2 forwarding and policies)
-- `controller/policy.json` — Host tiers and priority rooms
-- `topology/` — Network topology
-- `experiments/run_clients.py` — Automated multi-client performance testing
-- `experiments/results/` — CSV performance results
-- `docs/protocol.md` — Protocol specification
-
-## Run Locally
-
-Open a terminal in the project root.
-
-Start the chat server:
+Terminal 1 — start the server:
 
 ```bash
-python server/chat_server.py
+python3 server/chat_server.py
 ```
 
-Open a second terminal:
+Terminal 2 (and more for extra users) — connect a client:
 
 ```bash
-python client/chat_client.py
+CHAT_HOST=127.0.0.1 python3 client/chat_client.py
 ```
 
-Open additional terminals to connect multiple clients:
+Ports: chat `5000`, room events `6000`, OpenFlow controller `6653`.
 
-```bash
-python client/chat_client.py
-```
-
-## Chat Commands
+### Chat commands
 
 | Command | Description |
 |---|---|
-| `REGISTER <user> <pass>` | Register a new user |
-| `LOGIN <user> <pass>` | Log in |
-| `CREATE <room>` | Create a chat room |
-| `JOIN <room>` | Join a room |
-| `LEAVE <room>` | Leave a room |
-| `MSG <room> <text>` | Send a room message |
-| `PM <user> <text>` | Send a private message |
-| `USERS` | List online users |
-| `ROOMS` | List available rooms |
-| `QUIT` | Disconnect from the server |
+| `REGISTER <user> <pass>` / `LOGIN <user> <pass>` | Account management |
+| `CREATE <room>` / `JOIN <room>` / `LEAVE <room>` | Rooms |
+| `MSG <room> <text>` | Send to a room |
+| `PM <user> <text>` | Private message |
+| `USERS` / `ROOMS` | Who's online / which rooms exist |
+| `QUIT` | Disconnect |
 
-## Server Features
+## The SDN network
 
-- Multiple simultaneous TCP clients using threading.
-- User registration and authentication.
-- Duplicate registration and invalid credential handling.
-- Room creation, joining and leaving.
-- Room messaging and message broadcasting.
-- Private messaging between online users.
-- Handling of nonexistent and offline message recipients.
-- Online-user tracking.
-- Graceful client disconnection and room-membership cleanup.
-- Background queue for asynchronous SDN notifications.
-
-## SDN Notifications
-
-The chat server sends newline-terminated messages over a separate TCP connection to `127.0.0.1:6000`.
-
-Supported events:
-
-- `ROOM_JOIN <user_ip> <room>`
-- `ROOM_LEAVE <user_ip> <room>`
-
-The server uses a background worker to process these notifications so controller communication does not block normal chat operations.
-
-The controller in `controller/chat_controller.py` listens for these messages.
-
-## Run the SDN Controller
-
-Start the chat server first, then run the controller from the project root:
-
-```bash
-ryu-manager controller/chat_controller.py
+`topology/topology.py` builds:
+(to be changed and replaced using cisco packet tracer ss)
+```
+c1..cN ──┐
+         ├── s1 ══ 5 Mbps, 10 ms ══ s2 ── server (10.0.0.10)
+ctrl ────┘
 ```
 
-The controller reads `controller/policy.json` and listens on port `6000` for room events.
+The `s1↔s2` link is the bottleneck. Two HTB queues live on both of its
+ports:
 
-See `controller/README.md` for the policy format.
+| Queue | Tier | Guaranteed | May use up to |
+|---:|---|---:|---:|
+| 0 | normal | 0.5 Mbps | full 5 Mbps (borrows when priority is idle) |
+| 1 | priority | 3 Mbps | full 5 Mbps |
 
-## Automated Performance Testing
+So nobody is throttled when the link is idle — but under congestion the
+priority tier keeps its 3 Mbps share and the normal tier yields.
 
-The project includes an automated client launcher that supports 10, 25, 50 and 100 simultaneous clients.
+The controller classifies chat traffic (source IP + TCP port 5000) into
+these queues. Tiers are configured in `controller/policy.json`:
 
-Before running an experiment:
-
-1. Start the chat server.
-2. Ensure the test room exists (default: `room1`).
-3. Run the launcher from the project root.
-
-Example:
-
-```bash
-python experiments/run_clients.py --count 10 --messages 5 --room room1 --output experiments/results/load_10.csv
+```json
+{
+  "priority_rooms": ["vip"],
+  "default_tier": "normal",
+  "hosts": {
+    "10.0.0.1": "priority",
+    "10.0.0.2": "normal",
+    "10.0.0.3": "normal",
+    "10.0.0.4": "blocked"
+  }
+}
 ```
 
-Other supported client counts:
+Hosts not listed get the `default_tier`. The chat server tells the
+controller about room joins/leaves on port 6000; while a user is in a
+priority room, their traffic rides the priority queue — live, no restart.
+
+## Run on Mininet
+
+Start the controller, then the topology:
 
 ```bash
-python experiments/run_clients.py --count 25 --messages 5 --room room1 --output experiments/results/load_25.csv
-
-python experiments/run_clients.py --count 50 --messages 5 --room room1 --output experiments/results/load_50.csv
-
-python experiments/run_clients.py --count 100 --messages 5 --room room1 --output experiments/results/load_100.csv
+ryu-env/bin/ryu-manager controller/chat_controller.py   # terminal 1
+sudo python3 topology/topology.py 25                    # terminal 2 (10/25/50/100)
 ```
 
-The automated clients:
+In the Mininet CLI, start the server (it needs the controller address so its
+room events reach it):
 
-- Register and log in automatically.
-- Join the specified room.
-- Send a fixed number of messages.
-- Measure message round-trip time (RTT).
-- Measure connection setup time.
-- Record message status and timing information in CSV files.
+```
+mininet> server bash -c 'CONTROLLER_HOST=10.0.0.254 python3 -u server/chat_server.py > /tmp/chat_server.log 2>&1 &'
+mininet> xterm c1 c2 c3
+```
 
-The launcher checks client completion, successful message counts and execution timeouts.
+Then chat from the client terminals with `python3 client/chat_client.py`.
+Watch the controller terminal: every room join/leave is logged together with
+the policy applied and the queue chosen.
 
-## Performance Test Results
+## Experiments
 
-The following results were obtained from Windows localhost testing using 5 messages per client.
+The orchestrator automates everything — topology, controller, chat server,
+one automated client per host, CSV output:
 
-| Concurrent clients | Total messages | Successful messages | Failed messages | Execution time |
-|---:|---:|---:|---:|---:|
-| 10 | 50 | 50 | 0 | 217.811 ms |
-| 25 | 125 | 125 | 0 | 514.343 ms |
-| 50 | 250 | 250 | 0 | 1122.431 ms |
-| 100 | 500 | 500 | 0 | 2339.235 ms |
+```bash
+# comparison (same workload on both controllers)
+sudo python3 experiments/run_mininet.py --setup ours --count 25 \
+    --messages 20 --size 1000 --runs 3 --priority \
+    --output experiments/results/compare_ours_25clients.csv
+sudo python3 experiments/run_mininet.py --setup baseline --count 25 \
+    --messages 20 --size 1000 --runs 3 --priority \
+    --output experiments/results/compare_baseline_25clients.csv
 
-All four experiments completed successfully, with 925 successful messages and zero failed messages.
+# priority vs normal under load (1 priority user vs 13 normal users)
+sudo python3 experiments/run_mininet.py --setup ours --count 15 \
+    --messages 50 --size 1000 --runs 3 --priority --prefix norm \
+    --output experiments/results/priority_load.csv
+```
 
-### CSV Results
+Notes:
 
-The final experiment results are stored in `experiments/results/`:
+- `--priority` adds one priority-tier user on `c1` (joining `vip`) in both
+  setups, so results can be split by tier (`pri*` vs `norm*` usernames).
+- `c1` (priority tier) and `c4` (blocked — it intentionally cannot connect)
+  are excluded from the load batches.
+- 100-client runs work but are slow: the 5 Mbps bottleneck serializes
+  ~2 MB of offered load per sweep, and a lost message in a few clients
+  under peak congestion is normal.
+- Plots: `python3 experiments/plot_comparison.py` (baseline vs policy)
+  and `python3 experiments/plot_priority.py
+  experiments/results/priority_load_run*.csv` (priority vs normal RTT).
 
-- `final_10_test.csv`
-- `final_25_test.csv`
-- `final_50_test.csv`
-- `final_100_test.csv`
+Full procedures, result tables and discussion: [docs/architecture.md](docs/architecture.md).
 
-Each CSV contains:
+## Results so far
 
-- Username
-- Connection setup time (ms)
-- Message number
-- Message RTT (ms)
-- Message status
+Baseline (plain learning switch, Mininet, 5 messages per client — details
+in `docs/architecture.md` §3.1):
 
-**Note:** These measurements were obtained using local Windows TCP connections. They are not Mininet network performance measurements.
+| Concurrent clients | Successful | Average RTT (ms) | Avg connection setup (ms) |
+|---:|---:|---:|---:|
+| 10 | 50/50 | 72.174 | 122.560 |
+| 25 | 125/125 | 83.452 | 291.304 |
+| 50 | 250/250 | 82.845 | 2368.849 |
 
-## Limitations
-
-- User accounts and rooms are stored in memory and reset when the server restarts.
-- Local Windows clients share the loopback IP address.
-- SDN controller notifications require the controller to be running to be delivered.
-- Queue-based priority on the Mininet bottleneck link is handled in the separate network/SDN milestone.
+RTT stayed flat but connection setup exploded with load — the learning
+switch has no way to protect anyone from the congestion.
+The priority-policy comparison and priority-vs-normal results are being
+produced with the commands above (placeholder tables in
+`docs/architecture.md` §3.2/§3.3).
 
 ## Screenshots
 
@@ -186,35 +181,10 @@ Each CSV contains:
 
 ![Chat Client](https://github.com/user-attachments/assets/8263b009-7761-4c28-91a9-527c65f8eac0)
 
-## Mininet Baseline Performance Results
+## Limitations
 
-Baseline performance testing was conducted using Mininet with a 5 Mbps bottleneck link and 10 ms configured link delay.
-
-Each client sent 5 messages to the chat server. Message RTT and connection setup time were recorded.
-
-| Concurrent clients | Total messages | Successful messages | Failed messages | Average RTT (ms) | Average connection setup (ms) |
-|---:|---:|---:|---:|---:|---:|
-| 10 | 50 | 50 | 0 | 72.174 | 122.560 |
-| 25 | 125 | 125 | 0 | 83.452 | 291.304 |
-| 50 | 250 | 250 | 0 | 82.845 | 2368.849 |
-
-All three experiments completed successfully, recording 425 successful messages with zero failures.
-
-### Mininet CSV and Graph Results
-
-The measurements and generated graphs are stored in `experiments/results/`:
-
-- `baseline_10clients.csv`
-- `baseline_25clients.csv`
-- `baseline_50clients.csv`
-- `baseline_rtt.png`
-- `baseline_connection_setup.png`
-- `baseline_25clients_rtt.png`
-- `baseline_25clients_connection_setup.png`
-- `baseline_50clients_rtt.png`
-- `baseline_50clients_connection_setup.png`
-
-### Performance Observation
-
-Average RTT remained around 83 ms for the 25- and 50-client experiments. Average connection setup time increased substantially, from 122.560 ms with 10 clients to 2368.849 ms with 50 clients. This indicates increased connection setup overhead under higher concurrent client loads.
-
+- Accounts and rooms are in memory; they reset when the server restarts.
+- Queues and policies are only enforced on the Mininet bottleneck link —
+  local testing has no SDN path.
+- Room notifications require the controller to be running when the server
+  reports them.
