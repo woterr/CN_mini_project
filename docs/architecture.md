@@ -240,53 +240,55 @@ Outputs land in `experiments/results/` (`comparison_rtt.png`,
 | 25 | 125 | 125 | 83.452 | 291.304 |
 | 50 | 250 | 250 | 82.845 | 2368.849 |
 
-### 3.2 Comparison at scale: baseline vs. priority policy (to be filled)
+### 3.2 Comparison at scale: baseline vs. priority policy
 
-Run the standardized comparison of §2.4 for counts 10/25/50/100 (both
-setups include the `pri1` priority user so RTT can be split by tier),
-then fill in the table below from the combined CSVs:
+The matched 100-client comparison used both setups with
+`--count 100 --messages 20 --size 1000 --runs 3`.
 
-| Concurrent clients | Setup | Successful / total | Average RTT (ms) | Avg connection setup (ms) |
-|---:|---|---:|---:|---:|
-| 10 | Baseline (no tiers) | — | — | — |
-| 10 | Priority policy (tiered queues) | — | — | — |
-| 25 | Baseline (no tiers) | — | — | — |
-| 25 | Priority policy (tiered queues) | — | — | — |
-| 50 | Baseline (no tiers) | — | — | — |
-| 50 | Priority policy (tiered queues) | — | — | — |
-| 100 | Baseline (no tiers) | — | — | — |
-| 100 | Priority policy (tiered queues) | — | — | — |
+Averages below are calculated across successful message rows in each
+combined CSV.
 
-Notes for whoever runs this:
+| Setup | Successful / total rows | Success rate | Average RTT (ms) | Avg connection setup (ms) |
+|---|---:|---:|---:|---:|
+| Baseline (no tiers) | 3615/3620 | 99.86% | 9701.728 | 7852.314 |
+| Our controller (tiered queues) | 3558/3560 | 99.94% | 6522.144 | 9332.785 |
 
-- With the current queue configuration neither tier is hard-capped below
-  the link rate, so normal users should be close to baseline while the
-  priority user stays fast under load.
-- Averages over successful messages only; `plots: python3
-  experiments/plot_comparison.py`.
-- The 100-client runs are slow (a saturated run takes minutes — the
-  5 Mbps bottleneck serializes ~2 MB of offered load per sweep), so
-  expect long wall-clock times, and a lost message in a few clients
-  under peak congestion is normal.
+At 100 clients, the controller run had approximately 32.8% lower average
+RTT, while connection setup time was approximately 18.8% higher.
 
-### 3.3 Priority vs. normal RTT under load (to be filled)
+The `--count` argument includes the separately configured `c1` priority
+host and `c4` blocked host. The automated normal-client load therefore
+contained 98 clients in these runs.
 
-Run the §2.5 experiment (our controller, 1 priority user on `c1` in
-`vip` + 13 normal users flooding `room1`, 50 messages of ~1000 bytes
-each, 3 runs), then fill in:
+The historical baseline results in §3.1 used 5 messages per client and
+are not directly comparable to the newer 20-message, 3-run measurements.
+Matched baseline CSVs for 10, 25, and 50 clients are not available.
 
-| Group | Messages | Average RTT (ms) |
+Averages are calculated over successful messages only. Generate the
+comparison plots with `python3 experiments/plot_comparison.py`.
+
+### 3.3 Priority vs. normal RTT under load
+
+The priority-load experiment used our controller with one priority user
+(`c1`) and 13 normal users. It used 20 messages of approximately 1000
+bytes per user over 3 runs.
+
+| Group | Successful messages | Average RTT (ms) |
 |---|---:|---:|
-| Priority tier (queue 1) | — | — |
-| Normal tier (queue 0) | — | — |
+| Priority tier (queue 1) | 60 | 39.901 |
+| Normal tier (queue 0) | 780 | 290.204 |
 
-Expected result: the priority user's traffic keeps flowing through the
-guaranteed 3 Mbps queue while the 13 normal users saturate their
-queue — a large RTT difference. Plot with
-`python3 experiments/plot_priority.py experiments/results/priority_load_run*.csv`
-(a log-scale y axis keeps the small priority bar visible). State the run
-conditions next to the result: these runs use more messages than the
-§3.2 comparison, so the numbers are not directly comparable.
+All 840 measured messages succeeded. The priority tier achieved
+approximately 86.2% lower average RTT than the normal tier in this test.
+
+Generate the plot with:
+
+`python3 experiments/plot_priority.py experiments/results/priority_load.csv`
+
+The plot is saved as `experiments/results/priority_vs_normal_rtt.png`.
+These results describe a separate priority-load experiment and should
+not be directly compared with the 100-client comparison in §3.2 because
+the workload and traffic groups differ.
 
 ## 4. Discussion
 

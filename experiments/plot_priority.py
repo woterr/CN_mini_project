@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 RESULTS = Path(__file__).resolve().parent / "results"
 GROUPS = {"priority": "Priority tier (queue 1)",
           "normal": "Normal tier (queue 0)"}
-PREFIXES = {"pri": "priority", "norm": "normal"}
+PREFIXES = {"pri": "priority", "norm": "normal", "auto": "normal"}
 
 
 def group_of(username):
