@@ -19,14 +19,26 @@ rooms = {}          # room name: set of usernames
 client_user = {}    # client socket: username
 
 lock = threading.Lock()
+send_locks = {}     # client socket: lock, so one socket's writes are atomic
 
 controller_queue = queue.Queue()
 
 
 def send_message(client, message):
-    """Send one newline-terminated message to a client."""
+    """Send one newline-terminated message to a client.
+
+    Broadcasts come from many client threads at once, and a single
+    recipient socket is written to by all of them.  Without a per-socket
+    lock, concurrent sendall() calls split each other mid-line whenever
+    the recipient's TCP buffer is full (slow bottleneck link), and the
+    client then reads a torn line as its command response.  The
+    per-socket lock keeps every message line atomic.
+    """
+    with lock:
+        socket_lock = send_locks.setdefault(client, threading.Lock())
     try:
-        client.sendall((message + "\n").encode("utf-8"))
+        with socket_lock:
+            client.sendall((message + "\n").encode("utf-8"))
     except OSError:
         pass
 

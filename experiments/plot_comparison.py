@@ -22,6 +22,7 @@ Output:
     experiments/results/comparison_connection_setup.png
 """
 
+import argparse
 import csv
 import statistics
 import sys
@@ -75,12 +76,13 @@ def series_avg(prefix, count, column):
     return avg(path, column)
 
 
-def collect(column):
+def collect(column, counts=None):
     """Return matched points and historical baseline points."""
+    counts = counts or CLIENT_COUNTS
     matched = {setup: ([], []) for setup in SERIES}
     historical = ([], [])
 
-    for count in CLIENT_COUNTS:
+    for count in counts:
         for setup, meta in SERIES.items():
             value = series_avg(meta["prefix"], count, column)
             if value is None and setup == "baseline" and count == 100:
@@ -106,8 +108,8 @@ def collect(column):
     return matched, historical
 
 
-def plot(column, ylabel, outfile):
-    matched, historical = collect(column)
+def plot(column, ylabel, outfile, counts):
+    matched, historical = collect(column, counts)
 
     if not any(matched[s][0] for s in SERIES) and not historical[0]:
         sys.exit(f"No input CSVs found for {column!r}; nothing to plot.")
@@ -141,14 +143,14 @@ def plot(column, ylabel, outfile):
                         textcoords="offset points", xytext=(dx, dy),
                         ha=ha, fontsize=7, color=meta["color"])
 
-    ax.set_xlim(left=0, right=max(CLIENT_COUNTS) * 1.15)
+    ax.set_xlim(left=0, right=max(counts) * 1.15)
     plotted_values = [v for setup in SERIES for v in matched[setup][1]]
     plotted_values += historical[1]
     if plotted_values:
         ax.set_ylim(0, max(plotted_values) * 1.12)
     else:
         ax.set_ylim(bottom=0)
-    ax.set_xticks(CLIENT_COUNTS)
+    ax.set_xticks(counts)
     ax.set_xlabel("Concurrent clients")
     ax.set_ylabel(ylabel)
     ax.set_title(f"{ylabel} vs. number of clients")
@@ -183,9 +185,17 @@ def plot(column, ylabel, outfile):
 
 
 def main():
-    plot("rtt_ms", "Average RTT (ms)", RESULTS / "comparison_rtt.png")
+    parser = argparse.ArgumentParser(
+        description="Plot baseline vs. policy controller results")
+    parser.add_argument("--counts", type=int, nargs="+",
+                        default=CLIENT_COUNTS,
+                        help="Client counts to plot (default: all)")
+    args = parser.parse_args()
+
+    plot("rtt_ms", "Average RTT (ms)", RESULTS / "comparison_rtt.png",
+         args.counts)
     plot("connection_setup_ms", "Connection Setup Time (ms)",
-         RESULTS / "comparison_connection_setup.png")
+         RESULTS / "comparison_connection_setup.png", args.counts)
 
 
 if __name__ == "__main__":

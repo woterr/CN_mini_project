@@ -126,6 +126,11 @@ class ChatController(app_manager.RyuApp):
 
     def _add_flow(self, dp, table, priority, match, actions=None,
                   goto_forward=False, idle_timeout=0):
+        # NOTE: policy (tier/queue) rules and learned L2 rules must NOT
+        # expire: the baseline learning switch installs its flows
+        # permanently, and an expired L2 rule would make the switch flood
+        # unicast packets to every access port until re-learned.  Keep
+        # both setups apples-to-apples and free of expiry churn.
         parser = dp.ofproto_parser
         instructions = []
 
@@ -309,11 +314,12 @@ class ChatController(app_manager.RyuApp):
             out_port = dp.ofproto.OFPP_FLOOD
         elif eth.dst in macs:
             out_port = macs[eth.dst]
+            # Permanent, like the baseline learning switch (no idle
+            # timeout): expiry would re-flood unicast traffic.
             self._add_flow(
                 dp, TABLE_FORWARD, PRIORITY_L2,
                 parser.OFPMatch(in_port=in_port, eth_dst=eth.dst),
-                actions=[parser.OFPActionOutput(out_port, 0)],
-                idle_timeout=60)
+                actions=[parser.OFPActionOutput(out_port, 0)])
         else:
             out_port = dp.ofproto.OFPP_FLOOD
 

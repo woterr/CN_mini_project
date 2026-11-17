@@ -29,6 +29,7 @@ import argparse
 import csv
 import importlib.util
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -197,8 +198,42 @@ def load_hosts(net, count):
             if i not in (1, 4)]
 
 
-def launch_batch(net, hosts, prefix, room, messages, size, timeout):
-    """Start one auto client per host, wait for all, return (rows, failed)."""
+BARRIER_TIMEOUT = 300  # seconds to wait for all clients to join before GO
+
+
+def wait_for_barrier(barrier_dir, expected_users, timeout):
+    """Wait until every expected client has joined, then release them all.
+
+    Each client writes <user>.ready after connect+login+join; once all
+    markers exist this writes the GO marker, and every waiting client
+    starts sending at the same moment in both setups.  On timeout it
+    releases anyway (clients proceed on their own timeout) so a failed
+    client cannot stall the whole run.
+    """
+    barrier_dir = Path(barrier_dir)
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        missing = [u for u in expected_users
+                   if not (barrier_dir / f"{u}.ready").exists()]
+        if not missing:
+            break
+        time.sleep(0.1)
+    else:
+        print(f"WARNING: start barrier timed out after {timeout}s; "
+              f"missing: {', '.join(missing)}")
+
+    (barrier_dir / "GO").write_text("go\n")
+    print(f"Start barrier released for {len(expected_users)} clients "
+          f"({time.monotonic() - (deadline - timeout):.1f}s to reach it)")
+
+
+def launch_batch(net, hosts, prefix, room, messages, size, timeout,
+                 barrier_dir=None, expected_users=None):
+    """Start one auto client per host, wait for all, return (rows, failed).
+
+    With barrier_dir, clients only start sending once every expected user
+    (across both batches) has joined — see wait_for_barrier."""
     tmpdir = Path("/tmp/mn_exp")
     tmpdir.mkdir(exist_ok=True)
 
@@ -215,7 +250,13 @@ def launch_batch(net, hosts, prefix, room, messages, size, timeout):
                f"--username {user} --password pass123 --room {room} "
                f"--messages {messages} --size {size} "
                f"--csv {tmpdir}/{user}.csv > {tmpdir}/{user}.log 2>&1")
+        if barrier_dir:
+            cmd += f" --barrier-dir {barrier_dir}"
         processes.append((user, host, host.popen(cmd, shell=True)))
+
+    if barrier_dir:
+        wait_for_barrier(barrier_dir, expected_users,
+                         timeout=min(timeout, BARRIER_TIMEOUT))
 
     rows = []
     fieldnames = None
@@ -311,6 +352,12 @@ def main():
     print(f"Load batch hosts: {[h.name for h in hosts]} "
           f"(c1 priority tier, c4 blocked, excluded)")
 
+    # Everyone in the run must wait at the same start barrier: the normal
+    # batch plus (with --priority) the priority user on c1.
+    expected_users = [f"{args.prefix}{i}" for i in range(1, len(hosts) + 1)]
+    if args.priority:
+        expected_users.append(f"{args.priority_prefix}1")
+
     combined_rows = []
     combined_fieldnames = None
     all_failed = {}
@@ -323,6 +370,12 @@ def main():
 
             print(f"\n=== run {run}/{args.runs} -> {run_path.name} ===")
 
+            # Fresh barrier directory per run: remove stale ready/GO markers.
+            barrier_dir = Path("/tmp/mn_exp") / f"barrier_run{run}"
+            if barrier_dir.exists():
+                shutil.rmtree(barrier_dir)
+            barrier_dir.mkdir(parents=True)
+
             if args.priority:
                 # The priority user must compete with the normal batch, so
                 # launch both at the same time instead of running the
@@ -334,7 +387,7 @@ def main():
                         pri_result["value"] = launch_batch(
                             net, [net.get("c1")], args.priority_prefix,
                             args.priority_room, args.messages, args.size,
-                            timeout)
+                            timeout, barrier_dir, expected_users)
                     except BaseException as exc:  # surfaced below
                         pri_result["error"] = exc
 
@@ -344,10 +397,10 @@ def main():
 
                 rows, fieldnames, failed = launch_batch(
                     net, hosts, args.prefix, args.room,
-                    args.messages, args.size, timeout)
+                    args.messages, args.size, timeout,
+                    barrier_dir, expected_users)
 
                 pri_thread.join()
-
                 if "error" in pri_result:
                     raise pri_result["error"]
                 pri_rows, pri_fields, pri_failed = pri_result["value"]
@@ -357,7 +410,8 @@ def main():
             else:
                 rows, fieldnames, failed = launch_batch(
                     net, hosts, args.prefix, args.room,
-                    args.messages, args.size, timeout)
+                    args.messages, args.size, timeout,
+                    barrier_dir, expected_users)
 
             if failed:
                 all_failed.setdefault(run, []).extend(failed)

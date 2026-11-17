@@ -137,23 +137,41 @@ sudo python3 experiments/run_mininet.py --setup baseline --count 25 \
 sudo python3 experiments/run_mininet.py --setup ours --count 15 \
     --messages 20 --size 1000 --runs 3 --priority --prefix norm \
     --output experiments/results/priority_load.csv
+
+# the same workload against the baseline, for the "same user, baseline"
+# bar in the priority plot
+sudo python3 experiments/run_mininet.py --setup baseline --count 15 \
+    --messages 20 --size 1000 --runs 3 --priority --prefix norm \
+    --output experiments/results/priority_load_baseline.csv
 ```
 
 Notes:
 
+- **Start barrier** — every run connects, registers and joins all clients
+  first (including the priority user), then releases them all at the same
+  moment (`GO` marker in `/tmp/mn_exp/barrier_run<k>/`). This keeps the
+  offered load identical in both setups; without it, staggered setups
+  change how many clients overlap at the bottleneck and skew the RTT
+  comparison.
 - `--priority` adds one priority-tier user on `c1` (joining `vip`) in both
   setups, so results can be split by tier (`pri*` vs `norm*` usernames).
 - `c1` (priority tier) and `c4` (blocked — it intentionally cannot connect)
   are excluded from the load batches.
 - 100-client runs work but are slow: the 5 Mbps bottleneck serializes
-  ~2 MB of offered load per sweep, and some clients time out under peak
-  congestion; the combined CSVs only contain the rows that completed.
+  ~2 MB of offered load per sweep, so a full run takes several minutes.
+  With the 120 s client response timeout every client now completes.
 - Plots: `python3 experiments/plot_comparison.py` (baseline vs policy)
   and `python3 experiments/plot_priority.py
   experiments/results/priority_load_run*.csv` (priority vs normal RTT).
+  Add `--baseline experiments/results/priority_load_baseline.csv` to the
+  priority plot to include the same user from the baseline run.
 - The comparison plot uses matched 20-message runs at 10, 25, 50 and
   100 clients for both setups. The older 5-message baseline runs are kept
   below for reference but are not plotted against the matched curves.
+- The result tables and plots below come from runs using the start
+  barrier (every client connects and joins first, all start sending at
+  the same moment), permanent controller flows and an atomic server
+  broadcast; regenerate them with the commands above.
 
 Full procedures, result tables and discussion: [docs/architecture.md](docs/architecture.md).
 
@@ -173,54 +191,71 @@ comparable to the newer 20-message, 3-run experiments.
 ### Matched baseline results
 
 These baseline runs used the same workload as the controller comparison:
-20 messages of ~1000 bytes per normal user over 3 runs.
+20 messages of ~1000 bytes per normal user over 3 runs, with a start
+barrier so every client begins sending at the same moment.
 
 | Clients | Successful messages | Average RTT (ms) | Connection setup (ms) |
 |---:|---:|---:|---:|
-| 10 | 480 | 97.901 | 88.730 |
-| 25 | 1380 | 866.233 | 134.671 |
-| 50 | 2875 | 3478.923 | 711.358 |
-| 100 | 5205 | 11188.134 | 2362.598 |
+| 10 | 480 | 97.797 | 88.556 |
+| 25 | 1380 | 874.237 | 88.578 |
+| 50 | 2880 | 3637.803 | 92.150 |
+| 100 | 5880 | 15747.765 | 97.277 |
 
 The counts and averages are for normal-batch users only; each run also
 started one `pri1` priority user, which is analysed separately below.
+All messages succeeded in both setups at every client count.
 
-### Matched 100-client comparison
+### Matched comparison (all client counts)
 
-Both setups used 20 messages per client, 1000-byte messages and 3 runs.
+Both setups used 20 messages per client, 1000-byte messages, 3 runs and
+the same start barrier. Averages are over normal-batch users only.
 
-| Metric | Baseline | Our controller |
-|---|---:|---:|
-| Successful messages | 5265/5280 | 3558/3560 |
-| Success rate | 99.72% | 99.94% |
-| Average RTT (ms) | 11188.134 | 6522.144 |
-| Connection setup (ms) | 2362.598 | 9332.785 |
+| Clients | Baseline RTT (ms) | Policy RTT (ms) | Baseline setup (ms) | Policy setup (ms) |
+|---:|---:|---:|---:|---:|
+| 10 | 97.797 | 97.776 | 88.556 | 88.839 |
+| 25 | 874.237 | 875.041 | 88.578 | 89.042 |
+| 50 | 3637.803 | 3891.880 | 92.150 | 91.616 |
+| 100 | 15747.765 | 15341.250 | 97.277 | 122.199 |
 
-The controller run had approximately 41.7% lower average RTT, while
-connection setup time was approximately 4.0× higher (295% higher).
+While the link is uncongested (10 clients) the two setups are
+indistinguishable, and once it saturates both RTT curves grow the same
+way: queueing policy does not create capacity, and the differences stay
+within a few percent. At 50 clients normal-tier users in the policy run
+are ~7% slower — they yield to the priority tier's guaranteed share,
+which is what the theory predicts. At 100 clients the per-message RTT is
+effectively equal (the run is so long that per-message averages are
+dominated by the shared backlog).
+
+Connection setup time is nearly identical in both setups at every scale
+(88–122 ms), which confirms the handshake is not affected by queue
+policy. The policy setup adds ~25% at 100 clients (controller
+round-trips during the join burst), a modest and expected cost.
 
 The count includes the separately configured c1 priority host and c4
-blocked host, so the topology has 98 normal automated client hosts. At
-100 clients some clients time out under saturation and therefore offer
-fewer messages; the CSVs contain 98 distinct baseline usernames and 87
-distinct policy usernames. Averages are over the messages that completed,
-so the two setups are compared on per-message RTT rather than total
-throughput.
+blocked host, so the topology has 98 normal automated client hosts.
+Averages are over successful messages only; in these runs every message
+succeeded.
 
 ### Priority vs. normal traffic
 
 The priority-load experiment used 1 priority user and 13 normal users,
-with 20 messages per user over 3 runs.
+with 20 messages per user over 3 runs, started at the same moment by the
+start barrier. The same workload was also run against the plain learning
+switch, where the `pri1` user gets no tier treatment.
 
 | Group | Successful messages | Average RTT (ms) |
 |---|---:|---:|
-| Priority queue (1) | 60 | 20.373 |
-| Normal queue (0) | 780 | 270.915 |
+| Priority queue (1), policy controller | 60 | 20.357 |
+| Normal queue (0), policy controller | 780 | 270.096 |
+| Same `pri1` user, baseline (no tiers) | 60 | 240.580 |
 
-Priority traffic was about 92.5% lower than normal traffic. This run used
-the controller version that classifies chat traffic in both directions,
-so both the request (`tcp_dst=5000`) and the server reply
-(`tcp_src=5000`) use the priority queue.
+Under the policy controller the priority user was about 92.5% faster
+than the normal tier, while under the baseline the identical workload
+ran at ~241 ms — i.e. like a normal user. This isolates the effect of
+the priority queue: the same traffic goes ~12× faster purely because of
+its tier. This run used the controller version that classifies chat
+traffic in both directions, so both the request (`tcp_dst=5000`) and
+the server reply (`tcp_src=5000`) use the priority queue.
 
 ### Plots
 

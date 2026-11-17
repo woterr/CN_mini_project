@@ -249,38 +249,35 @@ Outputs land in `experiments/results/` (`comparison_rtt.png`,
 
 ### 3.2 Comparison at scale: baseline vs. priority policy
 
-Matched baseline runs are available for all four client counts, using
-`--count N --messages 20 --size 1000 --runs 3`. The table below covers
-normal-batch users only (the `pri1` priority user is analysed in §3.3).
+Matched runs are available for all four client counts, using
+`--count N --messages 20 --size 1000 --runs 3`. Every run uses the
+start barrier: all clients connect, register and join first, and start
+sending at the same moment, so the offered load is identical in both
+setups. The table below covers normal-batch users only (the `pri1`
+priority user is analysed in §3.3); every message succeeded.
 
-| Concurrent clients | Successful messages | Average RTT (ms) | Avg connection setup (ms) |
-|---:|---:|---:|---:|
-| 10 | 480 | 97.901 | 88.730 |
-| 25 | 1380 | 866.233 | 134.671 |
-| 50 | 2875 | 3478.923 | 711.358 |
-| 100 | 5205 | 11188.134 | 2362.598 |
+| Concurrent clients | Successful messages | Avg RTT baseline (ms) | Avg RTT policy (ms) | Setup baseline (ms) | Setup policy (ms) |
+|---:|---:|---:|---:|---:|---:|
+| 10 | 480 | 97.797 | 97.776 | 88.556 | 88.839 |
+| 25 | 1380 | 874.237 | 875.041 | 88.578 | 89.042 |
+| 50 | 2880 | 3637.803 | 3891.880 | 92.150 | 91.616 |
+| 100 | 5880 | 15747.765 | 15341.250 | 97.277 | 122.199 |
 
-The matched 100-client comparison used both setups with
-`--count 100 --messages 20 --size 1000 --runs 3`.
+While the bottleneck is uncongested (10 clients) the two setups are
+indistinguishable. Once it saturates, both RTT curves grow the same way:
+queueing policy moves delay between tiers, it does not remove it, and
+the differences stay within a few percent. At 50 clients the policy's
+normal-tier users are ~7% slower because they yield to the priority
+tier's guaranteed share — the theoretically expected behaviour. At 100
+clients per-message RTT is effectively equal, dominated by the shared
+backlog on the 5 Mbps link.
 
-Averages below are calculated across successful message rows in each
-combined CSV.
-
-| Setup | Successful / total rows | Success rate | Average RTT (ms) | Avg connection setup (ms) |
-|---|---:|---:|---:|---:|
-| Baseline (no tiers) | 5265/5280 | 99.72% | 11188.134 | 2362.598 |
-| Our controller (tiered queues) | 3558/3560 | 99.94% | 6522.144 | 9332.785 |
-
-At 100 clients, the controller run had approximately 41.7% lower average
-RTT, while connection setup time was approximately 4.0× higher
-(295%).
-
-The `--count` argument includes the separately configured `c1` priority
-host and `c4` blocked host, so the topology has 98 normal automated
-client hosts. At 100 clients some clients time out under saturation and
-offer fewer messages; the CSVs contain 98 distinct baseline usernames and
-87 distinct policy usernames. Averages are over the messages that
-completed, so the comparison is per-message RTT rather than throughput.
+Connection setup time is nearly identical in both setups (88–122 ms),
+confirming the handshake is unaffected by queue policy. The policy
+controller adds ~25% setup cost at 100 clients (controller round-trips
+for reactive flow installation during the join burst); unlike earlier
+measurements this gap no longer grows superlinearly, because learned
+flows no longer expire and no longer re-flood traffic.
 
 The historical baseline results in §3.1 used 5 messages per client and
 are retained for reference only. The matched runs above use 20 messages
@@ -298,16 +295,22 @@ comparison plots with `python3 experiments/plot_comparison.py`.
 
 The priority-load experiment used our controller with one priority user
 (`c1`) and 13 normal users. It used 20 messages of approximately 1000
-bytes per user over 3 runs.
+bytes per user over 3 runs, all started at the same moment by the start
+barrier. The same workload was also run against the plain learning
+switch, where the `pri1` user receives no tier treatment.
 
 | Group | Successful messages | Average RTT (ms) |
 |---|---:|---:|
-| Priority tier (queue 1) | 60 | 20.373 |
-| Normal tier (queue 0) | 780 | 270.915 |
+| Priority tier (queue 1), policy controller | 60 | 20.357 |
+| Normal tier (queue 0), policy controller | 780 | 270.096 |
+| Same `pri1` user, baseline (no tiers) | 60 | 240.580 |
 
 In this concurrent run the priority tier was about 92.5% faster. The
-controller classifies chat traffic in both directions: the request
-(`ipv4_src=<client>, tcp_dst=5000`) and the server reply
+baseline row shows the same user without tier treatment, running at
+~241 ms — i.e. like a normal user — which isolates the effect of the
+priority queue: identical traffic goes ~12× faster purely because of its
+tier. The controller classifies chat traffic in both directions: the
+request (`ipv4_src=<client>, tcp_dst=5000`) and the server reply
 (`ipv4_dst=<client>, tcp_src=5000`) both use the client's queue. This
 matters because each normal message is broadcast to the other room
 members, so the return path carries most of the load.
@@ -329,7 +332,7 @@ from 291 ms (25 clients) to 2369 ms (50 clients): with one 5 Mbps
 bottleneck and a learning switch, the TCP handshakes plus per-connection
 flow installation compete with everyone else's traffic once enough
 clients start at the same time. With the matched 20-message workload the
-baseline rises from 97.9 ms at 10 clients to 11.2 s at 100 clients as the
+baseline rises from 97.8 ms at 10 clients to 15.7 s at 100 clients as the
 bottleneck saturates.
 
 **What the controller changes.**
@@ -362,15 +365,16 @@ bottleneck saturates.
   replace the link's netem delay; `configure_queues` re-attaches the
   10 ms delay as a child qdisc under the HTB classes so both experiment
   setups share the same 5 Mbps / 10 ms bottleneck.
-- Averages over successful messages only. Under peak congestion a
-  single message can be lost occasionally (TCP buffer pressure);
-  report and discuss any losses.
-- The 100-client connection setup times (2.4 s baseline, 9.3 s policy)
-  include SYN retransmission backoff under saturation (1 s, 2 s, 4 s, ...).
-  They are not caused by a small server backlog: Python/Linux uses a
-  backlog of 4096 here. Staggering client starts would reduce the initial
-  SYN burst but would also change the workload, so both setups launch all
-  clients together.
+- Averages over successful messages only. In the current runs every
+  message succeeded in both setups; if a future run loses messages under
+  peak congestion (TCP buffer pressure), report and discuss the losses.
+- Client connections use a 120 s response timeout (`CHAT_SOCKET_TIMEOUT`
+  in `client/chat_client.py`): with a synchronized 99-client burst the
+  server replies legitimately queue behind the bottleneck for tens of
+  seconds at 100 clients, and a shorter limit aborts healthy runs.
+- The connection-setup numbers (88–122 ms) are low because the start
+  barrier lets the join burst complete before any message traffic; this
+  is the fair comparison point for the handshake itself.
 - The priority-load CSVs in this repository were produced after the
   controller gained bidirectional classification, so the priority request
   and the server reply both use queue 1.
