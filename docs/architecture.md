@@ -52,7 +52,14 @@ Two OpenFlow 1.3 tables on every switch:
   | 260 | priority-room member IP, port 5000 | `set_queue:1` | dynamic room policy |
   | 200 / 100 | tier host IP, port 5000 | `set_queue:1` / `set_queue:0` | static user tier |
   | 50 | any host, port 5000 | `set_queue:0` | `default_tier` for hosts not listed in `policy.json` |
-  | 0 | everything else | goto table 1 | L2 traffic (ARP, pings, server replies) |
+  | 0 | everything else | goto table 1 | L2 traffic (ARP, pings, non-chat packets) |
+
+  Every port-5000 rule is installed twice: once for the client-to-server
+  direction (`ipv4_src=<client>`, `tcp_dst=5000`) and once for the
+  server-to-client direction (`ipv4_dst=<client>`, `tcp_src=5000`). Both
+  halves of a chat round trip cross the bottleneck, so both must be
+  assigned to the client's queue; classifying only requests lets the
+  reply wait behind normal traffic.
 
 - **Table 1 — forwarding**: MAC-learning L2 switch (flows with 60 s idle
   timeout, flood for unknown/broadcast destinations).
@@ -84,9 +91,9 @@ The server cannot see room names inside the TCP stream, so it tells the
 controller: `ROOM_JOIN <user_ip> <room>` / `ROOM_LEAVE <user_ip> <room>` on
 port 6000. When the room is a priority room:
 
-- **ROOM_JOIN** installs a `priority=260` flow sending that user's chat
-  traffic to the priority queue *while the system is running* — no restart,
-  no reconnection.
+- **ROOM_JOIN** installs a `priority=260` pair of flows sending that
+  user's chat traffic (requests and replies) to the priority queue
+  *while the system is running* — no restart, no reconnection.
 - **ROOM_LEAVE** (last priority room) deletes the flow, so traffic falls
   back to the user's tier queue.
 - Blocked users are never moved: their traffic stays dropped, and the
@@ -185,7 +192,7 @@ remaining hosts (joining `room1`) concurrently:
 
 ```bash
 sudo python3 experiments/run_mininet.py --setup ours --count 15 \
-    --messages 50 --size 1000 --runs 3 --priority --prefix norm \
+    --messages 20 --size 1000 --runs 3 --priority --prefix norm \
     --output experiments/results/priority_load.csv
 ```
 
@@ -203,10 +210,10 @@ This produces `priority_load_run1..3.csv` and a combined
    ```bash
    # on c1 (priority tier):
    python3 client/chat_client.py --auto --username pri1 --room vip \
-       --messages 30 --csv experiments/results/priority_load_run1.csv
+       --messages 20 --size 1000 --csv experiments/results/priority_load_run1.csv
    # on c2, c3, ... (normal tier):
    python3 client/chat_client.py --auto --username norm1 --room room1 \
-       --messages 30 --csv experiments/results/priority_load_run1.csv
+       --messages 20 --size 1000 --csv experiments/results/priority_load_run1.csv
    ```
 
    To launch several users at once with the right prefix, use
@@ -242,6 +249,17 @@ Outputs land in `experiments/results/` (`comparison_rtt.png`,
 
 ### 3.2 Comparison at scale: baseline vs. priority policy
 
+Matched baseline runs are available for all four client counts, using
+`--count N --messages 20 --size 1000 --runs 3`. The table below covers
+normal-batch users only (the `pri1` priority user is analysed in §3.3).
+
+| Concurrent clients | Successful messages | Average RTT (ms) | Avg connection setup (ms) |
+|---:|---:|---:|---:|
+| 10 | 480 | 97.901 | 88.730 |
+| 25 | 1380 | 866.233 | 134.671 |
+| 50 | 2875 | 3478.923 | 711.358 |
+| 100 | 5205 | 11188.134 | 2362.598 |
+
 The matched 100-client comparison used both setups with
 `--count 100 --messages 20 --size 1000 --runs 3`.
 
@@ -250,19 +268,28 @@ combined CSV.
 
 | Setup | Successful / total rows | Success rate | Average RTT (ms) | Avg connection setup (ms) |
 |---|---:|---:|---:|---:|
-| Baseline (no tiers) | 3615/3620 | 99.86% | 9701.728 | 7852.314 |
+| Baseline (no tiers) | 5265/5280 | 99.72% | 11188.134 | 2362.598 |
 | Our controller (tiered queues) | 3558/3560 | 99.94% | 6522.144 | 9332.785 |
 
-At 100 clients, the controller run had approximately 32.8% lower average
-RTT, while connection setup time was approximately 18.8% higher.
+At 100 clients, the controller run had approximately 41.7% lower average
+RTT, while connection setup time was approximately 4.0× higher
+(295%).
 
 The `--count` argument includes the separately configured `c1` priority
-host and `c4` blocked host. The automated normal-client load therefore
-contained 98 clients in these runs.
+host and `c4` blocked host, so the topology has 98 normal automated
+client hosts. At 100 clients some clients time out under saturation and
+offer fewer messages; the CSVs contain 98 distinct baseline usernames and
+87 distinct policy usernames. Averages are over the messages that
+completed, so the comparison is per-message RTT rather than throughput.
 
 The historical baseline results in §3.1 used 5 messages per client and
-are not directly comparable to the newer 20-message, 3-run measurements.
-Matched baseline CSVs for 10, 25, and 50 clients are not available.
+are retained for reference only. The matched runs above use 20 messages
+per client and 3 runs, and are the source for the comparison plots.
+
+The baseline topology still uses the same 5 Mbps / 10 ms Mininet
+bottleneck; it simply has no OpenFlow queues. The flat 25/50 baseline
+curve in §3.1 is caused by the 5-short-message workload, not by a missing
+rate limit.
 
 Averages are calculated over successful messages only. Generate the
 comparison plots with `python3 experiments/plot_comparison.py`.
@@ -275,15 +302,19 @@ bytes per user over 3 runs.
 
 | Group | Successful messages | Average RTT (ms) |
 |---|---:|---:|
-| Priority tier (queue 1) | 60 | 39.901 |
-| Normal tier (queue 0) | 780 | 290.204 |
+| Priority tier (queue 1) | 60 | 20.373 |
+| Normal tier (queue 0) | 780 | 270.915 |
 
-All 840 measured messages succeeded. The priority tier achieved
-approximately 86.2% lower average RTT than the normal tier in this test.
+In this concurrent run the priority tier was about 92.5% faster. The
+controller classifies chat traffic in both directions: the request
+(`ipv4_src=<client>, tcp_dst=5000`) and the server reply
+(`ipv4_dst=<client>, tcp_src=5000`) both use the client's queue. This
+matters because each normal message is broadcast to the other room
+members, so the return path carries most of the load.
 
 Generate the plot with:
 
-`python3 experiments/plot_priority.py experiments/results/priority_load.csv`
+`python3 experiments/plot_priority.py experiments/results/priority_load_run*.csv`
 
 The plot is saved as `experiments/results/priority_vs_normal_rtt.png`.
 These results describe a separate priority-load experiment and should
@@ -292,12 +323,14 @@ the workload and traffic groups differ.
 
 ## 4. Discussion
 
-**Baseline (§3.1, historical 5-message runs).** Average RTT stayed around
-83 ms from 25 to 50 clients, but connection setup time exploded from
-291 ms (25 clients) to 2369 ms (50 clients): with one 5 Mbps bottleneck
-and a learning switch, the TCP handshakes plus per-connection flow
-installation compete with everyone else's traffic once enough clients
-start at the same time.
+**Baseline (historical 5-message runs in §3.1).** Average RTT stayed
+around 83 ms from 25 to 50 clients, but connection setup time exploded
+from 291 ms (25 clients) to 2369 ms (50 clients): with one 5 Mbps
+bottleneck and a learning switch, the TCP handshakes plus per-connection
+flow installation compete with everyone else's traffic once enough
+clients start at the same time. With the matched 20-message workload the
+baseline rises from 97.9 ms at 10 clients to 11.2 s at 100 clients as the
+bottleneck saturates.
 
 **What the controller changes.**
 
@@ -314,10 +347,11 @@ start at the same time.
   queue immediately (one flow, priority 260, `set_queue:1`); leaving the
   last priority room moves it back. The upgrade path is per user and needs
   no topology or controller restart.
-- *Classification is per user, not per flow*: matching source IP +
-  TCP port 5000 means every message from a user is classified without
-  per-message controller involvement — the RTT overhead of the policy is
-  one flow install per join/leave, not per message.
+- *Classification is per user, not per flow*: matching the user's IP
+  with TCP port 5000 in both directions means every message and reply is
+  classified without per-message controller involvement — the RTT
+  overhead of the policy is a small fixed flow set per user, not one
+  flow per message.
 
 **Threats to validity / notes.**
 
@@ -331,5 +365,14 @@ start at the same time.
 - Averages over successful messages only. Under peak congestion a
   single message can be lost occasionally (TCP buffer pressure);
   report and discuss any losses.
+- The 100-client connection setup times (2.4 s baseline, 9.3 s policy)
+  include SYN retransmission backoff under saturation (1 s, 2 s, 4 s, ...).
+  They are not caused by a small server backlog: Python/Linux uses a
+  backlog of 4096 here. Staggering client starts would reduce the initial
+  SYN burst but would also change the workload, so both setups launch all
+  clients together.
+- The priority-load CSVs in this repository were produced after the
+  controller gained bidirectional classification, so the priority request
+  and the server reply both use queue 1.
 - With more than 4 clients, `c4` stays blocked by policy — exclude it from
   load runs (its client intentionally cannot connect).

@@ -2,7 +2,7 @@
 
 Input: one or more CSVs produced by run_clients.py with the --prefix
 option, e.g. users named pri1... (priority tier) and norm1... (normal
-tier). Users named auto... (no tier info) are ignored.
+tier). Users named auto... (no tier info) are treated as normal.
 
 Usage:
 
@@ -27,6 +27,7 @@ RESULTS = Path(__file__).resolve().parent / "results"
 GROUPS = {"priority": "Priority tier (queue 1)",
           "normal": "Normal tier (queue 0)"}
 PREFIXES = {"pri": "priority", "norm": "normal", "auto": "normal"}
+COLORS = {"priority": "#2a7ab9", "normal": "#d62728"}
 
 
 def group_of(username):
@@ -43,15 +44,25 @@ def main():
         sys.exit("Usage: plot_priority.py <csv> [csv ...]")
 
     rtts = defaultdict(list)
+    users = defaultdict(set)
+    per_run = defaultdict(list)
 
     for name in files:
+        run_rtts = defaultdict(list)
         with open(name, newline="") as f:
             for row in csv.DictReader(f):
                 if row["status"] != "SUCCESS":
                     continue
                 group = group_of(row["username"])
                 if group:
-                    rtts[group].append(float(row["rtt_ms"]))
+                    rtt = float(row["rtt_ms"])
+                    rtts[group].append(rtt)
+                    users[group].add(row["username"])
+                    run_rtts[group].append(rtt)
+
+        for group, values in run_rtts.items():
+            if values:
+                per_run[group].append(statistics.mean(values))
 
     missing = [g for g in GROUPS if not rtts[g]]
     if missing:
@@ -60,21 +71,49 @@ def main():
 
     labels = []
     values = []
+    errors = []
 
     for group, label in GROUPS.items():
-        labels.append(label)
         values.append(statistics.mean(rtts[group]))
-        print(f"{label}: {len(rtts[group])} messages, "
+        errors.append(statistics.stdev(per_run[group])
+                      if len(per_run[group]) > 1 else 0.0)
+        labels.append(f"{label}\n{len(users[group])} user(s), "
+                      f"{len(rtts[group])} msgs")
+        print(f"{label}: {len(users[group])} users, "
+              f"{len(rtts[group])} messages, "
               f"average RTT {values[-1]:.3f} ms")
 
-    plt.figure()
-    bars = plt.bar(labels, values, color=["#2a7ab9", "#d62728"])
-    plt.bar_label(bars, fmt="%.2f ms")
-    plt.ylabel("Average RTT (ms)")
-    plt.title("RTT under load: priority vs. normal tier")
-    plt.savefig(RESULTS / "priority_vs_normal_rtt.png", dpi=200)
-    plt.close()
-    print(f"Saved {RESULTS / 'priority_vs_normal_rtt.png'}")
+    n_priority = len(users["priority"])
+    n_normal = len(users["normal"])
+    msgs_per_user = len(rtts["normal"]) // max(n_normal * len(files), 1)
+
+    fig, ax = plt.subplots(figsize=(7.0, 5.0))
+    bars = ax.bar(
+        labels, values,
+        color=[COLORS[g] for g in GROUPS],
+        yerr=errors if any(errors) else None,
+        capsize=5 if any(errors) else 0)
+    ax.bar_label(bars, fmt="%.2f ms", padding=6)
+    ax.set_ylim(bottom=0)
+    ax.set_ylabel("Average RTT (ms)")
+    ax.set_title(
+        f"RTT under load: {n_priority} priority vs. {n_normal} normal "
+        f"user{'s' if n_normal != 1 else ''}")
+
+    fig.text(
+        0.5, 0.01,
+        f"{msgs_per_user} messages/user/run over {len(files)} run(s), "
+        "~1000-byte messages. The priority user joins the priority room "
+        "(vip); the normal users share room1 and provide the competing "
+        "traffic when both batches run concurrently. Error bars show the "
+        "spread of the per-run averages.",
+        ha="center", va="bottom", fontsize=7, color="#444444", wrap=True)
+    fig.subplots_adjust(bottom=0.24)
+
+    out = RESULTS / "priority_vs_normal_rtt.png"
+    fig.savefig(out, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {out}")
 
 
 if __name__ == "__main__":

@@ -59,13 +59,11 @@ Ports: chat `5000`, room events `6000`, OpenFlow controller `6653`.
 
 ## The SDN network
 
-`topology/topology.py` builds:
-(to be changed and replaced using cisco packet tracer ss)
-```
-c1..cN ──┐
-         ├── s1 ══ 5 Mbps, 10 ms ══ s2 ── server (10.0.0.10)
-ctrl ────┘
-```
+`topology/topology.py` builds the network shown below: `c1..cN` and the
+controller connect to switch `s1`, which reaches the chat server through
+switch `s2` over the 5 Mbps / 10 ms bottleneck link.
+
+![Network topology](docs/topology_diagram.png)
 
 The `s1↔s2` link is the bottleneck. Two HTB queues live on both of its
 ports:
@@ -78,8 +76,10 @@ ports:
 So nobody is throttled when the link is idle — but under congestion the
 priority tier keeps its 3 Mbps share and the normal tier yields.
 
-The controller classifies chat traffic (source IP + TCP port 5000) into
-these queues. Tiers are configured in `controller/policy.json`:
+The controller classifies chat traffic in both directions (client →
+server uses source IP + TCP port 5000; server → client uses destination
+IP + TCP source port 5000) into these queues. Tiers are configured in
+`controller/policy.json`:
 
 ```json
 {
@@ -135,7 +135,7 @@ sudo python3 experiments/run_mininet.py --setup baseline --count 25 \
 
 # priority vs normal under load (1 priority user vs 13 normal users)
 sudo python3 experiments/run_mininet.py --setup ours --count 15 \
-    --messages 50 --size 1000 --runs 3 --priority --prefix norm \
+    --messages 20 --size 1000 --runs 3 --priority --prefix norm \
     --output experiments/results/priority_load.csv
 ```
 
@@ -146,11 +146,14 @@ Notes:
 - `c1` (priority tier) and `c4` (blocked — it intentionally cannot connect)
   are excluded from the load batches.
 - 100-client runs work but are slow: the 5 Mbps bottleneck serializes
-  ~2 MB of offered load per sweep, and a lost message in a few clients
-  under peak congestion is normal.
+  ~2 MB of offered load per sweep, and some clients time out under peak
+  congestion; the combined CSVs only contain the rows that completed.
 - Plots: `python3 experiments/plot_comparison.py` (baseline vs policy)
   and `python3 experiments/plot_priority.py
   experiments/results/priority_load_run*.csv` (priority vs normal RTT).
+- The comparison plot uses matched 20-message runs at 10, 25, 50 and
+  100 clients for both setups. The older 5-message baseline runs are kept
+  below for reference but are not plotted against the matched curves.
 
 Full procedures, result tables and discussion: [docs/architecture.md](docs/architecture.md).
 
@@ -167,23 +170,42 @@ comparable to the newer 20-message, 3-run experiments.
 | 25 | 125/125 | 83.452 | 291.304 |
 | 50 | 250/250 | 82.845 | 2368.849 |
 
+### Matched baseline results
+
+These baseline runs used the same workload as the controller comparison:
+20 messages of ~1000 bytes per normal user over 3 runs.
+
+| Clients | Successful messages | Average RTT (ms) | Connection setup (ms) |
+|---:|---:|---:|---:|
+| 10 | 480 | 97.901 | 88.730 |
+| 25 | 1380 | 866.233 | 134.671 |
+| 50 | 2875 | 3478.923 | 711.358 |
+| 100 | 5205 | 11188.134 | 2362.598 |
+
+The counts and averages are for normal-batch users only; each run also
+started one `pri1` priority user, which is analysed separately below.
+
 ### Matched 100-client comparison
 
 Both setups used 20 messages per client, 1000-byte messages and 3 runs.
 
 | Metric | Baseline | Our controller |
 |---|---:|---:|
-| Successful messages | 3615/3620 | 3558/3560 |
-| Success rate | 99.86% | 99.94% |
-| Average RTT (ms) | 9701.728 | 6522.144 |
-| Connection setup (ms) | 7852.314 | 9332.785 |
+| Successful messages | 5265/5280 | 3558/3560 |
+| Success rate | 99.72% | 99.94% |
+| Average RTT (ms) | 11188.134 | 6522.144 |
+| Connection setup (ms) | 2362.598 | 9332.785 |
 
-The controller run had approximately 32.8% lower average RTT, while
-connection setup time was approximately 18.8% higher.
+The controller run had approximately 41.7% lower average RTT, while
+connection setup time was approximately 4.0× higher (295% higher).
 
 The count includes the separately configured c1 priority host and c4
-blocked host. Thus, 98 normal automated clients were measured in the
-100-client runs.
+blocked host, so the topology has 98 normal automated client hosts. At
+100 clients some clients time out under saturation and therefore offer
+fewer messages; the CSVs contain 98 distinct baseline usernames and 87
+distinct policy usernames. Averages are over the messages that completed,
+so the two setups are compared on per-message RTT rather than total
+throughput.
 
 ### Priority vs. normal traffic
 
@@ -192,16 +214,21 @@ with 20 messages per user over 3 runs.
 
 | Group | Successful messages | Average RTT (ms) |
 |---|---:|---:|
-| Priority queue (1) | 60 | 39.901 |
-| Normal queue (0) | 780 | 290.204 |
+| Priority queue (1) | 60 | 20.373 |
+| Normal queue (0) | 780 | 270.915 |
 
-Priority traffic achieved approximately 86.2% lower average RTT.
-All 840 measured messages succeeded.
+Priority traffic was about 92.5% lower than normal traffic. This run used
+the controller version that classifies chat traffic in both directions,
+so both the request (`tcp_dst=5000`) and the server reply
+(`tcp_src=5000`) use the priority queue.
 
-Plots:
-- `experiments/results/comparison_rtt.png`
-- `experiments/results/comparison_connection_setup.png`
-- `experiments/results/priority_vs_normal_rtt.png`
+### Plots
+
+![Average RTT vs. clients](experiments/results/comparison_rtt.png)
+
+![Connection setup time vs. clients](experiments/results/comparison_connection_setup.png)
+
+![Priority vs. normal RTT](experiments/results/priority_vs_normal_rtt.png)
 
 Full procedures and discussion: [docs/architecture.md](docs/architecture.md).
 

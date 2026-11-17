@@ -32,6 +32,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -322,17 +323,41 @@ def main():
 
             print(f"\n=== run {run}/{args.runs} -> {run_path.name} ===")
 
-            rows, fieldnames, failed = launch_batch(
-                net, hosts, args.prefix, args.room,
-                args.messages, args.size, timeout)
-
             if args.priority:
-                pri_rows, pri_fields, pri_failed = launch_batch(
-                    net, [net.get("c1")], args.priority_prefix,
-                    args.priority_room, args.messages, args.size, timeout)
+                # The priority user must compete with the normal batch, so
+                # launch both at the same time instead of running the
+                # priority client after every normal client has finished.
+                pri_result = {}
+
+                def run_priority_batch():
+                    try:
+                        pri_result["value"] = launch_batch(
+                            net, [net.get("c1")], args.priority_prefix,
+                            args.priority_room, args.messages, args.size,
+                            timeout)
+                    except BaseException as exc:  # surfaced below
+                        pri_result["error"] = exc
+
+                pri_thread = threading.Thread(
+                    target=run_priority_batch, daemon=True)
+                pri_thread.start()
+
+                rows, fieldnames, failed = launch_batch(
+                    net, hosts, args.prefix, args.room,
+                    args.messages, args.size, timeout)
+
+                pri_thread.join()
+
+                if "error" in pri_result:
+                    raise pri_result["error"]
+                pri_rows, pri_fields, pri_failed = pri_result["value"]
                 rows.extend(pri_rows)
                 fieldnames = fieldnames or pri_fields
                 failed.extend(pri_failed)
+            else:
+                rows, fieldnames, failed = launch_batch(
+                    net, hosts, args.prefix, args.room,
+                    args.messages, args.size, timeout)
 
             if failed:
                 all_failed.setdefault(run, []).extend(failed)

@@ -15,8 +15,10 @@ Policies, configured in controller/policy.json:
                    is running, with no restart.
 
 Queues 0 and 1 are created on the bottleneck link ports by
-topology/topology.py. Table 0 classifies traffic by source IP and TCP
-destination port 5000; table 1 is a learning L2 switch.
+topology/topology.py. Table 0 classifies chat traffic by user in both
+directions (client -> server uses source IP + TCP dst 5000; server ->
+client uses destination IP + TCP src 5000); table 1 is a learning L2
+switch.
 """
 
 import json
@@ -90,6 +92,21 @@ class ChatController(app_manager.RyuApp):
             tcp_dst=CHAT_PORT,
         )
 
+    def _chat_reply_match(self, dp, ip):
+        """Match the server's replies to this client.
+
+        A chat round trip crosses the bottleneck twice: the request
+        (client -> server, tcp_dst=5000) and the reply (server -> client,
+        tcp_src=5000).  Both directions must use the client's queue, or a
+        priority request still waits behind normal traffic for its reply.
+        """
+        return dp.ofproto_parser.OFPMatch(
+            eth_type=ether.ETH_TYPE_IP,
+            ip_proto=in_proto.IPPROTO_TCP,
+            ipv4_dst=ip,
+            tcp_src=CHAT_PORT,
+        )
+
     def _ip_match(self, dp, ip):
         return dp.ofproto_parser.OFPMatch(eth_type=ether.ETH_TYPE_IP, ipv4_src=ip)
 
@@ -98,6 +115,13 @@ class ChatController(app_manager.RyuApp):
             eth_type=ether.ETH_TYPE_IP,
             ip_proto=in_proto.IPPROTO_TCP,
             tcp_dst=CHAT_PORT,
+        )
+
+    def _any_chat_reply_match(self, dp):
+        return dp.ofproto_parser.OFPMatch(
+            eth_type=ether.ETH_TYPE_IP,
+            ip_proto=in_proto.IPPROTO_TCP,
+            tcp_src=CHAT_PORT,
         )
 
     def _add_flow(self, dp, table, priority, match, actions=None,
@@ -154,8 +178,13 @@ class ChatController(app_manager.RyuApp):
                            actions=[parser.OFPActionSetQueue(
                                self._tier_queue(self.default_tier))],
                            goto_forward=True)
+            self._add_flow(dp, TABLE_CLASSIFY, PRIORITY_DEFAULT,
+                           self._any_chat_reply_match(dp),
+                           actions=[parser.OFPActionSetQueue(
+                               self._tier_queue(self.default_tier))],
+                           goto_forward=True)
             self.logger.info(
-                '[POLICY] switch %s: unknown hosts tier=%s -> chat traffic sent to %s',
+                '[POLICY] switch %s: unknown hosts tier=%s -> chat traffic (both directions) sent to %s',
                 sid, self.default_tier,
                 QUEUE_NAME[self._tier_queue(self.default_tier)])
 
@@ -172,15 +201,19 @@ class ChatController(app_manager.RyuApp):
                                self._chat_match(dp, ip),
                                actions=[parser.OFPActionSetQueue(queue)],
                                goto_forward=True)
+                self._add_flow(dp, TABLE_CLASSIFY, TIER_PRIORITY[tier],
+                               self._chat_reply_match(dp, ip),
+                               actions=[parser.OFPActionSetQueue(queue)],
+                               goto_forward=True)
                 self.logger.info(
-                    '[POLICY] switch %s: %s tier=%s -> chat traffic sent to %s',
+                    '[POLICY] switch %s: %s tier=%s -> chat traffic (both directions) sent to %s',
                     sid, ip, tier, QUEUE_NAME[queue])
 
         # Re-apply dynamic priority-room rules (e.g. after a switch reconnect).
         for ip in self.room_members:
             self._add_room_flow(dp, ip)
             self.logger.info(
-                '[POLICY] switch %s: %s in priority room(s) %s -> chat traffic sent to %s',
+                '[POLICY] switch %s: %s in priority room(s) %s -> chat traffic (both directions) sent to %s',
                 sid, ip, sorted(self.room_members[ip]), QUEUE_NAME[QUEUE_PRIORITY])
 
         self.logger.info('[INFO] switch %s connected and policies applied', sid)
@@ -189,13 +222,19 @@ class ChatController(app_manager.RyuApp):
 
     def _add_room_flow(self, dp, ip):
         parser = dp.ofproto_parser
+        queue_action = [parser.OFPActionSetQueue(QUEUE_PRIORITY)]
         self._add_flow(dp, TABLE_CLASSIFY, PRIORITY_ROOM,
                        self._chat_match(dp, ip),
-                       actions=[parser.OFPActionSetQueue(QUEUE_PRIORITY)],
+                       actions=queue_action,
+                       goto_forward=True)
+        self._add_flow(dp, TABLE_CLASSIFY, PRIORITY_ROOM,
+                       self._chat_reply_match(dp, ip),
+                       actions=queue_action,
                        goto_forward=True)
 
     def _remove_room_flow(self, dp, ip):
         self._delete_flow(dp, PRIORITY_ROOM, self._chat_match(dp, ip))
+        self._delete_flow(dp, PRIORITY_ROOM, self._chat_reply_match(dp, ip))
 
     def _handle_room_event(self, line):
         parts = line.split()
